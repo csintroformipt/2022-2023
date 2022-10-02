@@ -1,2 +1,4 @@
 term_1/bins
-.vscode/settings.json
+.vscode
+test*
+*txt

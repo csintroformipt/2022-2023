@@ -1,103 +1,109 @@
 #include <iostream>
-#include <fstream>
+#include <valarray>
 
-template<size_t dimension>
-struct Vec
-{
-private:
-    double value[dimension];
-public:
-    Vec() {}
-    Vec(double const (&x)[dimension])
-    {
-        for (size_t i = 0; i != dimension; i++)
-            value[i] = x[i];
-    }
-
-    void print(std::ostream& stream, char sep)
-    {
-        for (size_t i = 0; i != dimension; i++)
-            stream << value[i] << sep;
-    }
-
-    double operator[](int i)
-    {
-        return value[i];
-    } 
-
-    Vec<dimension> operator+(Vec<dimension> v, )
-    {
-        Vec<dimension> res;
-        for (size_t i = 0; i != dimension; i++)
-            res.value[i] = value[i] + v.value[i];
-        return res;
-    }
-    
-    void operator+=(Vec<dimension> v)
-    {
-        for (size_t i = 0; i != dimension; i++)
-            value[i] += v.value[i];
-    }
-
-    Vec<dimension> operator*(double k)
-    {
-        Vec<dimension> res;
-        for (size_t i = 0; i != dimension; i++)
-            res.value[i] = k * value[i];
-        return res;
-    }
-};
-
-template<size_t dimension>
-Vec<dimension> operator*(double k, Vec<dimension> v)
-{
-    Vec<dimension> res;
-    for (size_t i = 0; i != dimension; i++)
-        res.value[i] = k * value[i];
-    return res;
-}
-
-template<size_t dimension>
 class Solver
 {
-public:
+protected:
     double const delta;
-    Vec<dimension> x;
-    Vec<dimension> v;
+    std::valarray<double> x;
+    std::valarray<double> v;
     double const w2;
 
-    Solver(double const delta, Vec<dimension> const (&x), Vec<dimension> const (&v), double const w2) 
+public:
+    Solver(double const delta, std::valarray<double> const &x, std::valarray<double> const(&v), double const w2)
         : delta(delta), x(x), v(v), w2(w2) {}
 
-    void Next()
-    {
-        auto tmp = x + delta*v;
-        v += -w2*v;
-        x = tmp;
-    }
+    void virtual next() = 0;
 
-    void print(std::ostream& stream, char sep)
+    void write(std::ostream &stream = std::cout, char sep = ' ')
     {
-        x.print(stream, sep);
-        v.print(stream, sep);
+        for (int i = 0; i != x.size(); i++)
+            stream << x[i] << sep;
+        for (int i = 0; i != v.size(); i++)
+            stream << v[i] << sep;
+        stream << (v * v).sum() + w2 * (x * x).sum() << sep;
     }
 };
 
-int main(int argc, char** argv)
+class EulerSolver : public Solver
 {
-    if (argc != 6)
-        return -1;
-    const double delta = atof(argv[1]);
-    const double x0 = atof(argv[2]);
-    const double v0 = atof(argv[3]);
-    const double w2 = atof(argv[4]);
-    const double N = atof(argv[5]);
+public:
+    EulerSolver(double const delta, std::valarray<double> const &x, std::valarray<double> const(&v), double const w2)
+        : Solver(delta, x, v, w2) {}
 
-    Solver solver(delta, Vec({x0}), Vec({v0}), w2);
-    std::ofstream fout("res.csv");
-    for (int i = 0; i != N; i++)
+    void next() override
     {
-        solver.Next();
-        solver.print(fout, ',');
+        std::valarray<double> tmp (x + delta * v);
+        v = v + -delta * w2 * x;
+        x = tmp;
     }
+};
+
+class HeunSolver : public Solver
+{
+public:
+    HeunSolver(double const delta, std::valarray<double> const &x, std::valarray<double> const(&v), double const w2)
+        : Solver(delta, x, v, w2) {}
+
+    void next() override
+    {
+        std::valarray<double>  tmp_x (x + delta * v);
+        std::valarray<double>  tmp_v (v + -delta * w2 * x);
+
+        std::valarray<double>  tmp (x + delta * (v + tmp_v) / 2);
+        v = v + -delta * w2 * (x + tmp_x) / 2;
+        x = tmp;
+    }
+};
+
+class MySolver : public Solver
+{
+public:
+    MySolver(double const delta, std::valarray<double> const &x, std::valarray<double> const(&v), double const w2)
+        : Solver(delta, x, v, w2) {}
+
+    void next() override
+    {
+        std::valarray<double> tmp (x + delta * v - delta * delta * w2 * x);
+        v = v - delta * w2 * x;// - delta * delta * w2 * v/2;
+        x = tmp;
+    }
+};
+
+int main(int argc, char **argv)
+{
+    if (argc == 7)
+    {
+        const double delta = atof(argv[1]);
+        const double x0 = atof(argv[2]);
+        const double v0 = atof(argv[3]);
+        const double w2 = atof(argv[4]);
+        const double N = atof(argv[5]);
+        const int method = atoi(argv[6]);
+
+        Solver *solver;
+        switch (method)
+        {
+        case 0:
+            solver = new EulerSolver(delta, {x0}, {v0}, w2);
+            break;
+        case 1:
+            solver = new HeunSolver(delta, {x0}, {v0}, w2);
+            break;
+        case 2:
+            solver = new MySolver(delta, {x0}, {v0}, w2);
+            break;
+
+        default:
+            return -1;
+        }
+
+        for (int i = 0; i != N + 1; i++)
+        {
+            solver->write(std::cout, ' ');
+            solver->next();
+        }
+    }
+    else
+        return -1;
 }
