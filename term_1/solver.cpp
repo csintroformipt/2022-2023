@@ -3,10 +3,7 @@
 #include "json.hpp"
 #include <valarray>
 #include <vector>
-
-using type = double;
-template <typename type>
-using vector = std::valarray<type>;
+#include <ctime>
 
 #pragma region Vectors
 
@@ -264,6 +261,69 @@ protected:
 
 #pragma endregion
 
+#pragma region Printer
+
+// общие параметры вывода
+static std::ostream &stream;
+static std::string el_sep, zone_sep, row_sep, run_sep;
+
+// Класс для вывода данных о решении в поток
+template<template<typename type> class vector, typename type>
+struct Printer
+{
+    Printer(const Problem<vector, type> &problem) :
+        A(dynamic_cast<IAnalyticalProblem<vector, type>*>(const_cast<Problem<vector, type>*>(&problem))),
+        I(dynamic_cast<IHaveInvariantProblem<vector, type>*>(const_cast<Problem<vector, type>*>(&problem))) {}
+
+    // печать текующего состояния
+    void print(const type &x, const vector<type> &y) const
+    {
+        print(x);
+        print(y);
+        if (I != nullptr) 
+        {
+            print();
+            print(I->Invariant(y));
+        }
+        if (A != nullptr) 
+        {
+            print();
+            print(A->AnalyticalValue(x));
+        }
+        stream << row_sep;
+    }
+
+    // печать завершения забега и вывод времени
+    void stop(clock_t time) const
+    {
+        stream << run_sep << "time: " << time << row_sep;
+    }
+
+private:
+    // печать зонного разделителя
+    void print() const
+    {
+        stream << zone_sep << el_sep;
+    }
+    // печать значения
+    void print(const type &x) const
+    {
+        stream << x << el_sep; 
+    }
+    // печать вектора
+    void print(const vector<type> &y) const
+    {
+        for (int i = 0; i < y.size(); i++)
+            stream << y[i] << el_sep;
+    }
+
+    bool zone_flag;
+    const IAnalyticalProblem<vector, type> * const A;
+    const IHaveInvariantProblem<vector, type>  * const I;
+};
+
+#pragma endregion
+
 #pragma region Solver
 
 template<template<typename type> class vector, typename type>
@@ -274,7 +334,10 @@ class Solver // Итерационный решатель задачи Коши
     // method - функция, расчитывающая следующий вектор y
     Solver(const Problem<vector, type> &problem, type delta, 
         void (*method)(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &problem))
-        : problem(problem), delta(delta), y(problem.y0), x(0), method(method) {}
+        : problem(problem), delta(delta), y(problem.y0), x(0), method(method) 
+    {
+        printer = Printer<vector, type>(problem);
+    }
 
     // обнуляет состояние
     void restart(type delta)
@@ -294,18 +357,24 @@ class Solver // Итерационный решатель задачи Коши
     // запускает решение до достижения ограничения cons
     void run(const IConstraint<vector, type> &cons)
     {
+        clock_t start_time = clock();
         unsigned long long i = 0;
         for (; cons(x, y, i); i++)
+        {
             next();
-        // print x y Ax Ay I cons
+            printer.print(x, y);
+        }
+        printer.stop(clock() - start_time);
     }
 
 protected:
-    Problem<vector, type> &problem;
-    void (*method)(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &problem);
-    type delta;
     type x;
     vector<type> y;
+
+    const Problem<vector, type> &problem;
+    const void (*method)(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &problem);
+    const type delta;
+    const Printer<vector, type> printer;
 };
 
 template<template<typename type> class vector, typename type>
@@ -333,10 +402,7 @@ void runge_kutta(vector<type> &y, const type &x, const type &delta, const Proble
 
 #pragma endregion
 
-class Printer
-{
-};
-
 int main()
 {
+    
 }
