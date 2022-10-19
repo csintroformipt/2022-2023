@@ -1,6 +1,6 @@
-term_1/bins
+bins
 .vscode
 test*
 *txt
 json.hpp
-config.json
+term_1/config.json

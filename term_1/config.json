@@ -1,0 +1,89 @@
+{
+    "head": {
+        "stream": "std",
+        "el_sep": " ",
+        "zone_sep": " | ",
+        "row_sep": "\n",
+        "run_sep": "finish",
+        "do_log": false
+    },
+    "runs": [
+        {
+            "type": "double", 
+            "vector": "naive",
+            "problem": 
+            {
+                "type": "simplest_oscillator",
+                "x0": 1,
+                "v0": 0,
+                "w": 1
+            },
+            "method": "euler",
+            "constraint": 
+            {
+                "type": "counter",
+                "N": 100
+            },
+            "delta": 0.0000000010
+        },
+        {
+            "type": "double", 
+            "vector": "naive",
+            "problem": 
+            {
+                "type": "simplest_oscillator",
+                "x0": 1,
+                "v0": 0,
+                "w": 1
+            },
+            "method": "euler",
+            "constraint": 
+            {
+                "type": "counter",
+                "N": 100
+            },       
+            "delta": 0.0000000009
+        },
+        {
+            "type": "double", 
+            "vector": "naive",
+            "problem": 
+            {
+                "type": "simplest_oscillator",
+                "x0": 1,
+                "v0": 0,
+                "w": 1
+            },
+            "method": "euler",
+            "constraint": 
+            {
+                "type": "counter",
+                "N": 100
+            },       
+            "delta": 0.00000000011
+        }
+    ],
+    "examples":
+    {
+        "constraint_1": 
+        {
+            "type": "counter",
+            "N": 100
+        },
+        "constraint_2":
+        {
+            "type": "analytical",
+            "comparison_mask": {
+                "start": 0,
+                "size": 1,
+                "stride": 1
+            },
+            "reletive_deviation_limit": 0.01
+        },
+        "constraint_3": 
+        {
+            "type": "invariant",
+            "reletive_deviation_limit": 0.01
+        }
+    }
+}

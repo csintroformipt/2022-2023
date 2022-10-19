@@ -1,392 +1,544 @@
-#include <valarray>
-#include <algorithm>
-
 #include <iostream>
 #include <fstream>
 #include "json.hpp"
+#include <valarray>
+#include <vector>
+#include <ctime>
 
-// T - тип числовых переменных: double, float и т.д.
+#pragma region Vectors
 
-// State<T> - вектор T чисел, подерживающий векторные операции, НО:
-// сложение реализуется отложенно: операции + возвращают не результат суммы, а ряд, который реально суммируется только при операции +=
-// при этом все остальные операторы, кроме += работают с базовым типом.
-// В дочерних классах должен быть конструктор с экземпляром базового класса в параметре
-#pragma region State<T> 
-// Используется как вектор в задаче Коши
-template <typename T>
-class State
+template <typename type>
+using NaiveVector = std::valarray<type>; // Вектор обычной арифметики
+template <typename type>
+type norm2(const NaiveVector<type> &v)
 {
-public:
-    std::valarray<T> data;
+    return (v * v).sum();
+}
 
-    State() {}
-    State(std::valarray<T> d) : data(d) {}
-    State(std::initializer_list<T> d) : data(d) {}
-    virtual ~State(){}
+template <typename type>
+struct KahanVector // Вектор переопределяющий сумму по алгоритму Кэхэна
+{
+    // Хранит данные в виде ряда, который численно суммируется только при +=, -= и индексном обращении []
 
-    T operator[](size_t i)
+    KahanVector(std::initializer_list<type> ls) // ls.size() > 0
+        : value({std::valarray<type>(ls)}), error(std::valarray<type>(ls.size()))
     {
-        return data[i];
     }
 
-    State<T> operator-()
+    KahanVector(size_t n) // n > 0
+        : value({std::valarray<type>(n)}), error(std::valarray<type>(n))
     {
-        return State<T>(-data);
     }
 
-    virtual State<T>& operator+=(State<T> ds)
+    KahanVector<type> operator+(const KahanVector<type> &r) const &
     {
-        data += ds.data;
+        KahanVector<type> tmp(*this);
+        tmp.value.insert(tmp.value.end(), r.value.begin(), r.value.end());
+        return tmp;
+    }
+
+    KahanVector<type> &operator+(const KahanVector<type> &r) &&
+    {
+        this->value.insert(this->value.end(), r.value.begin(), r.value.end());
         return *this;
     }
 
-    virtual State<T>& operator+=(std::valarray<State<T>> ds_list)
+    KahanVector<type> operator-(const KahanVector<type> &r) const &
     {
-        for (auto ds : ds_list)
-            data += ds.data;
+        return *this + -r;
+    }
+
+    KahanVector<type> &operator-(const KahanVector<type> &r) &&
+    {
+        return std::move(*this) + -r;
+    }
+
+    KahanVector<type> &operator+=(const KahanVector<type> &r)
+    {
+        value.insert(value.end(), r.value.begin(), r.value.end());
+        collapse();
         return *this;
     }
-};
 
-// TODO: обобщенные -=, - через += и +
+    KahanVector<type> &operator-=(const KahanVector<type> &r)
+    {
+        return *this += -r;
+    }
 
-template<typename T>
-State<T> operator*(T a, State<T> s)
-{
-    return {s.data*a};
-}
+    KahanVector<type> operator*(const type &r) const &
+    {
+        return KahanVector<type>(*this) *= r;
+    }
 
-template<typename T>
-State<T> operator*(State<T> s, T a)
-{
-    return {s.data*a};
-}
+    KahanVector<type> &operator*(const type &r) &&
+    {
+        return *this *= r;
+    }
 
-template<typename T, typename Ta>
-std::valarray<State<T>> operator*(Ta a, std::valarray<State<T>> sv)
-{
-    for (int i = 0; i < sv.size(); i++)
-        sv[i] = (T)a * sv[i];
-    return sv;
-}
+    KahanVector<type> operator/(const type &r) const &
+    {
+        return KahanVector<type>(*this) /= r;
+    }
 
-template<typename T, typename Ta>
-std::valarray<State<T>> operator*(std::valarray<State<T>> sv, Ta a)
-{
-    for (int i = 0; i < sv.size(); i++)
-        sv[i] = (T)a * sv[i];
-    return sv;
-}
+    KahanVector<type> &operator/(const type &r) &&
+    {
+        return *this /= r;
+    }
 
-template<typename T>
-std::valarray<State<T>> operator+(State<T> ls, State<T> rs)
-{
-    return {{ls, rs}};
-}
+    KahanVector<type> &operator*=(const type &r)
+    {
+        for (auto v = value.begin(); v != value.end(); v++)
+            *v *= r;
+        error *= r;
+        return *this;
+    }
 
-template<typename T>
-std::valarray<State<T>> operator+(std::valarray<State<T>> ls, std::valarray<State<T>> rs)
-{
-    size_t l = ls.size(), r = rs.size();
-    std::valarray<State<T>> s(State<T>({}), l + r);
-    for (int i = 0; i < l; i++)
-        s[i] = ls[i];
-    for (int i = 0; i < r; i++)
-        s[l+i] = rs[i];
-    return s;
-}
+    KahanVector<type> &operator/=(const type &r)
+    {
+        return *this *= (1 / r);
+    }
 
-template<typename T>
-std::valarray<State<T>> operator+(State<T> ls, std::valarray<State<T>> rs)
-{
-    return std::valarray({ls}) + rs;
-}
+    KahanVector<type> operator-() const &
+    {
+        return *this * -1;
+    }
 
-template<typename T>
-std::valarray<State<T>> operator+(std::valarray<State<T>> ls, State<T> rs)
-{
-    return ls + std::valarray({rs});
-}
-#pragma endregion
+    KahanVector<type> &operator-() &&
+    {
+        return *this * -1;
+    }
 
-// Реализация суммирования Кэхэна
-template <typename T>
-class KahanState : public State<T> 
-{
+    template<typename index>
+    auto operator[](const index &i)
+    {
+        collapse();
+        return value.front()[i];
+    }
+
+    template<typename index>
+    const auto operator[](const index &i) const
+    {
+        collapse();
+        return value.front()[i];
+    }
+
+    size_t size() const
+    {
+        return error.size();
+    }
+
+    template<typename type_>
+    friend type_ norm2(const KahanVector<type_> &v);
+
 private:
-    std::valarray<T> c;
-
-public:
-    KahanState(std::valarray<T> d) : State<T>(d)
+    void collapse()
     {
-        c = std::valarray<T>(d.size());
+        // segmentation fault if value.size() == 0
+        for (auto v = value.begin() + 1; v != value.end(); v++)
+        {
+            auto y = *v - error;
+            auto t = value.front() + y;
+            error = (t - value.front()) - y;
+            value.front() = t;
+        }
+        value.resize(1);
     }
-    KahanState(State<T> s) : KahanState<T>(s.data) {}
-    virtual ~KahanState() {}
-
-    State<T>& operator+=(State<T> ds) override
+    void collapse() const
     {
-        auto y = ds.data - c;
-        auto t = State<T>::data + y;
-        c = (t - State<T>::data) - y;
-        State<T>::data = t;
-        return *this;
+        const_cast<KahanVector<type>*>(this)->collapse();
     }
 
-    State<T>& operator+=(std::valarray<State<T>> ds_list) override
-    {
-        for (auto ds : ds_list)
-            *this += ds;
-        return *this;
-    }
+    std::vector<std::valarray<type>> value;
+    std::valarray<type> error;
 };
 
-// TODO: NeumaierState, KleinState, etc.
-
-
-// Обощенная задача Коши в виде системы разрешенных относительно производной ОДУ первого порядка y' = f(x, y)
-template <typename T>
-class Problem
+template <typename type_, typename type>
+KahanVector<type> operator*(const type_ &r, const KahanVector<type> &v)
 {
-public:
-    State<T> initial_y;
+    return v * r;
+}
 
-    Problem(State<T> initial_y) : initial_y(initial_y) {}
-    virtual ~Problem() {}
+template <typename type_, typename type>
+KahanVector<type> &operator*(const type_ &r, KahanVector<type> &&v)
+{
+    return std::move(v) * r;
+}
 
-    // Возвращает производную в виду ряда (суммы)
-    // возвращаемое значение удобно выводить в фигурные скобки:
-    // return {state} or {state + ... + state}
-    virtual std::valarray<State<T>> f(T x, State<T> y) = 0;
+template <typename type>
+type norm2(const KahanVector<type> &v)
+{
+    v.collapse();
+    return norm2<type>(v.value.front());
+}
 
-    std::valarray<State<T>> f(T x, std::valarray<State<T>> y)
-    {
-        return f(x, y.sum()); 
-    }
+#pragma endregion // TODO: NeumaierVector, KleinVector, etc.
 
-    //запись в поток форматированного вектора
-    virtual void print(T x, State<T> y, std::ostream &stream,
-                       std::string e_sep,
-                       std::string a_sep,
-                       std::string r_sep) = 0;
+#pragma region Problems
+
+template <template <typename type> class vector, typename type>
+struct Problem // Обощенная задача Коши в виде системы разрешенных относительно производной ОДУ первого порядка y' = f(x, y)
+{
+    Problem(const vector<type> &y0) : y0(y0) {}
+    virtual vector<type> operator()(const type &x, const vector<type> &y) const & = 0;
+
+    const vector<type> y0;
+};
+template <template <typename type> class vector, typename type>
+struct IAnalyticalProblem // Задача с известным аналитическим решением
+{
+    virtual vector<type> AnalyticalValue(type x) const & = 0;
+};
+template <template <typename type> class vector, typename type>
+struct IHaveInvariantProblem // Задача с инвариантном по x (интегралом движения)
+{
+    virtual type Invariant(const vector<type> &y) const & = 0;
 };
 
-// Задача с известным аналитическим решением
-template <typename T>
-class AnalyticalProblem : public Problem<T>
+template <template <typename type> class vector, typename type>
+struct SimplestOscillator : Problem<vector, type>, IAnalyticalProblem<vector, type>, IHaveInvariantProblem<vector, type>
 {
-public:
-    AnalyticalProblem(State<T> initial_y) : Problem<T>(initial_y) {}
-    virtual ~AnalyticalProblem() {}
+    SimplestOscillator(vector<type> y0, type w) : Problem<vector, type>(y0),
+                                                  w(w), w2(w * w),
+                                                  A(sqrt(y0[1] * y0[1] / w2 + y0[0] * y0[0])),
+                                                  initial_phase(atan(y0[1] / y0[0] / w)) {}
 
-    virtual State<T> analytical(T t) = 0; //Аналитическое решение для сравнения
-};
-
-// Одномерный гармонический осцилятор
-// x = y[0], v = y[1]
-template <typename T>
-class SingleHarmonic1dOscilator : public AnalyticalProblem<T>
-{
-public:
-    const T w, w2, A, initial_phase;
-
-    SingleHarmonic1dOscilator(State<T> initial_y, T w) : AnalyticalProblem<T>(initial_y),
-        w(w), w2(w * w), A(sqrt(initial_y[1] * initial_y[1] / w2 + initial_y[0] * initial_y[0])),
-        initial_phase(atan(initial_y[1] / initial_y[0] / w)) {}
-    virtual ~SingleHarmonic1dOscilator() {}
-
-    std::valarray<State<T>> f(T x, State<T> y) override
+    vector<type> operator()(const type &x, const vector<type> &y) const & override
     {
         return {{y[1], -w2 * y[0]}};
-    };
+    }
 
-    State<T> analytical(T x) override
+    vector<type> AnalyticalValue(type x) const & override
     {
         return {{A * cos(w * x + initial_phase),
                  -A * w * sin(w * x + initial_phase)}};
-    };
-
-    void print(T x, State<T> y, std::ostream &stream,
-               std::string e_sep,
-               std::string a_sep,
-               std::string r_sep) override
-    {
-        stream << x << a_sep
-               << y[0] << e_sep
-               << y[1] << e_sep
-               << y[1] * y[1] + w2 * y[0] * y[0] << a_sep
-               << analytical(x)[0] << e_sep
-               << analytical(x)[1] << r_sep;
-        // t | x v energy | x_a y_a \n
     }
+
+    type Invariant(const vector<type> &y) const & override
+    {
+        return norm2<type>(this->operator()(0, y));
+    }
+
+    const type w, w2, A, initial_phase;
 };
 
-// Пошаговый решатель задачи Коши, где
-// next() - сделать новый шаг
-// update_y() - абстрактная функция для получения нового значения y
-template <typename T>
-class Solver
+#pragma endregion
+
+#pragma region Constraints
+
+template <template <typename type> class vector, typename type>
+struct IConstraint // ограничение итераций солвера
 {
-public:
-    Problem<T> &problem;
-    T const delta;
-    T x = 0;
-    State<T> &y;
+    virtual bool operator()(const type &x, const vector<type> &y, unsigned long long i) const = 0;
+};
+
+template <template <typename type> class vector, typename type>
+struct СounterConstraint : public IConstraint<vector, type> // ограничение по количеству итераций
+{
+    СounterConstraint(unsigned long long N) : N(N) {}
+    bool operator()(const type &x, const vector<type> &y, unsigned long long i) const override
+    {
+        return (i < N);
+    }
 
 private:
-    std::ostream &stream;
-    std::string e_sep, a_sep, r_sep;
+    const unsigned long long N;
+};
 
-public:
-    Solver(Problem<T> &problem, T delta, State<T> &y)
-        : problem(problem), delta(delta), y(y), stream(std::cout) 
+template <template <typename type> class vector, typename type>
+struct AnalyticalDeviationConstraint : public IConstraint<vector, type> // ограничение относительного отклонения по выбранным координатам
+{
+    AnalyticalDeviationConstraint(
+        const IAnalyticalProblem<vector, type> &problem, const vector<type> &y0, const std::__1::slice &comparison_mask, const type &reletive_deviation_limit)
+        : problem(problem), comparison_mask(comparison_mask),
+          deviation_limit2(norm2<type>(y0[comparison_mask]) * reletive_deviation_limit * reletive_deviation_limit) {}
+
+    type current_deviation2(const type &x, const vector<type> &y) const
     {
-        // if (y.data != problem.initial_y.data)
-        //     throw std::runtime_error("Dismatch of problem's initial state and y state");
-    } 
-    virtual ~Solver() {}
+        return norm2<type>((problem.AnalyticalValue(x) - y)[comparison_mask]);
+    }
 
-    virtual void update_y() = 0; // находит следующий y
+    bool operator()(const type &x, const vector<type> &y, unsigned long long i) const override
+    {
+        return current_deviation2(x, y) < deviation_limit2;
+    }
 
+private:
+    const IAnalyticalProblem<vector, type> &problem;
+    const std::slice comparison_mask;
+    const type deviation_limit2;
+};
+
+template <template <typename type> class vector, typename type>
+struct InvariantDeviationConstraint : public IConstraint<vector, type> // ограничение относительного отклонения интеграла движения
+{
+    InvariantDeviationConstraint(
+        const IHaveInvariantProblem<vector, type> &problem, const vector<type> &y0, const type &reletive_deviation_limit)
+        : problem(problem), invariant(problem.Invariant(y0)), deviation_limit(invariant * reletive_deviation_limit) {}
+
+    bool operator()(const type &x, const vector<type> &y, unsigned long long i) const override
+    {
+        return abs(problem.Invariant(y) - invariant) < deviation_limit;
+    }
+
+protected:
+    const IHaveInvariantProblem<vector, type> &problem;
+    const type invariant;
+    const type deviation_limit;
+};
+
+#pragma endregion
+
+#pragma region Printer
+
+// общие параметры вывода
+static std::ostream *stream = nullptr;
+static std::string el_sep, zone_sep, row_sep, run_sep;
+static bool do_log;
+
+// Класс для вывода данных о решении в поток
+template <template <typename type> class vector, typename type>
+struct Printer
+{
+    Printer(const Problem<vector, type> &problem) : A(dynamic_cast<IAnalyticalProblem<vector, type> *>(const_cast<Problem<vector, type> *>(&problem))),
+                                                    I(dynamic_cast<IHaveInvariantProblem<vector, type> *>(const_cast<Problem<vector, type> *>(&problem))) {}
+
+    // печать текующего состояния
+    void print(const type &x, const vector<type> &y) const
+    {
+        if (!do_log)
+            return;
+        print(x);
+        print(y);
+        if (I != nullptr)
+        {
+            print();
+            print(I->Invariant(y));
+        }
+        if (A != nullptr)
+        {
+            print();
+            print(A->AnalyticalValue(x));
+        }
+        *stream << row_sep;
+    }
+
+    // печать завершения забега и вывод времени
+    void stop(clock_t time, unsigned long long int n, const type &x, const vector<type> &y, const vector<type> &y0) const
+    {
+        *stream << run_sep << " time: " << time << ", iteraitions: " << n;
+        if (I != nullptr)
+        {
+            *stream << ", dI: ";
+            *stream << I->Invariant(y) - I->Invariant(y0);
+        }
+        if (A != nullptr)
+        {
+            *stream << ", dy: ";
+            print(A->AnalyticalValue(x) - y);
+        }
+        *stream << row_sep;
+    }
+
+private:
+    // печать зонного разделителя
+    void print() const
+    {
+        *stream << zone_sep << el_sep;
+    }
+    // печать значения
+    void print(const type &x) const
+    {
+        *stream << x << el_sep;
+    }
+    // печать вектора
+    void print(const vector<type> &y) const
+    {
+        for (int i = 0; i < y.size(); i++)
+            *stream << y[i] << el_sep;
+    }
+
+    const IAnalyticalProblem<vector, type> *const A;
+    const IHaveInvariantProblem<vector, type> *const I;
+};
+
+#pragma endregion
+
+#pragma region Solver
+
+template <template <typename type> class vector, typename type>
+struct Solver // Итерационный решатель задачи Коши
+{
+    // problem - решаемая задача Коши
+    // delta - шаг по x одной итерации
+    // method - функция, расчитывающая следующий вектор y
+    Solver(const Problem<vector, type> &problem, type delta,
+           void (*method)(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &problem))
+        : problem(problem), delta(delta), y(problem.y0), x(0), method(method), printer(Printer<vector, type>(problem)) {}
+
+    // обнуляет состояние
+    void restart(type delta)
+    {
+        this->delta = delta;
+        y = problem.y0;
+        x = 0;
+    }
+
+    // делает итерацию
     void next()
     {
-        update_y();
+        method(y, x, delta, problem);
         x += delta;
     }
 
-    //устанавливает настройки для вывода
-    void set_printer(std::string e_sep = " ", std::string a_sep = " | ", std::string r_sep = "\n")
+    // запускает решение до достижения ограничения cons
+    void run(const IConstraint<vector, type> &cons)
     {
-        this->e_sep = e_sep;
-        this->a_sep = a_sep;
-        this->r_sep = r_sep;
+        clock_t start_time = clock();
+        unsigned long long i = 0;
+        for (; cons(x, y, i); i++)
+        {
+            next();
+            printer.print(x, y);
+        }
+        printer.stop(clock() - start_time, i, x, y, problem.y0);
     }
 
-    void print()
-    {
-        problem.print(x, y, stream, e_sep, a_sep, r_sep);
-    }
+protected:
+    type x;
+    vector<type> y;
+
+    const Problem<vector, type> &problem;
+    void (*method)(vector<type> &, const type &, const type &, const Problem<vector, type> &);
+    const type delta;
+    const Printer<vector, type> printer;
 };
 
-template <typename T>
-class EulerSolver final : public Solver<T>
+template <template <typename type> class vector, typename type>
+void euler(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &f)
 {
-public:
-    EulerSolver(Problem<T> &problem, T delta, State<T> &y) : Solver<T>(problem, delta, y) {}
-
-    void update_y() override
-    {
-        this->y += this->delta * this->problem.f(this->x, this->y);
-    }
-};
-
-template <typename T>
-class HeunSolver final : public Solver<T>
-{
-public:
-    HeunSolver(Problem<T> &problem, T delta, State<T> &y) : Solver<T>(problem, delta, y) {}
-
-    void update_y() override
-    {
-        auto tmp = this->y + this->delta * this->problem.f(this->x, this->y);
-        this->y += this->delta / 2 * (this->problem.f(this->x, this->y) + this->problem.f(this->x + this->delta, tmp));
-    }
-};
-
-template <typename T>
-class RungeKuttaSolver final : public Solver<T>
-{
-public:
-    RungeKuttaSolver(Problem<T> &problem, T delta, State<T> &y) : Solver<T>(problem, delta, y) {}
-
-    void update_y() override
-    {
-        auto k1 = this->problem.f(this->x, this->y);
-        auto k2 = this->problem.f(this->x + this->delta / 2, this->y + this->delta / 2 * k1);
-        auto k3 = this->problem.f(this->x + this->delta / 2, this->y + this->delta / 2 * k2);
-        auto k4 = this->problem.f(this->x + this->delta, this->y + this->delta * k3);
-        this->y += this->delta / 6 * (k1 + 2 * k2 + 2 * k3 + k4);
-    }
-};
-
-
-template <typename T>
-bool Solve(nlohmann::json_v3_11_1::json run, std::string e_sep, std::string a_sep, std::string r_sep)
-{
-    std::string problem = run["problem"], // выбор проблемы
-                method = run["method"], // выбор метода решения
-                sum = run["sum"]; // выбор метода суммирования
-    T delta = run["delta"];
-
-    Problem<T> *problem_p = nullptr;
-    std::valarray<T> initial_data;
-    if (problem == "single_harmonic_1d_oscilator")
-    {
-        T x0 = run["x0"], v0 = run["v0"], w = run["w"];
-        initial_data = {x0, v0};
-        problem_p = new SingleHarmonic1dOscilator<T>(initial_data, w);
-    }
-    else
-        return false;
-
-    State<T> *initial_state = nullptr;
-    if (sum == "naive")
-        initial_state = new State<T>(initial_data);
-    else if (sum == "kahan")
-        initial_state = new KahanState<T>(initial_data);
-    else
-        return false;
-
-    Solver<T> *solver = nullptr;
-    if (method == "euler")
-        solver = new EulerSolver<T>(*problem_p, delta, *initial_state);
-    else if (method == "heun")
-        solver = new HeunSolver<T>(*problem_p, delta, *initial_state);
-    else if (method == "runge_kutta")
-        solver = new RungeKuttaSolver<T>(*problem_p, delta, *initial_state);
-    else
-        return false;
-    solver->set_printer(e_sep, a_sep, r_sep);
-
-    for (int i = 100; i > 0; i--)
-    {
-        solver->print();
-        solver->next();
-    }
-
-    delete solver;
-    delete problem_p;
-    delete initial_state;
-
-    return true;
+    y += delta * f(x, y);
 }
 
+template <template <typename type> class vector, typename type>
+void heun(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &f)
+{
+    vector<type> k = y + delta * f(x, y);
+    y += delta * (f(x, y) + f(x + delta, k)) / 2;
+}
+
+template <template <typename type> class vector, typename type>
+void runge_kutta(vector<type> &y, const type &x, const type &delta, const Problem<vector, type> &f)
+{
+    vector<type> k1 = f(x, y);
+    vector<type> k2 = f(x + delta / 2, y + delta / 2 * k1);
+    vector<type> k3 = f(x + delta / 2, y + delta / 2 * k2);
+    vector<type> k4 = f(x + delta, y + delta * k3);
+    y += delta / 6 * (k1 + 2 * k2 + 2 * k3 + k4);
+}
+
+#pragma endregion
+
+#pragma region Parse &run
+
+template <template <typename type> class vector, typename type>
+const Problem<vector, type> *parse_problem(const nlohmann::json &run)
+{
+    auto problem_j = run["problem"];
+    std::string problem_s = problem_j["type"];
+    if (problem_s == "simplest_oscillator")
+        return new SimplestOscillator<vector, type>({problem_j["x0"], problem_j["v0"]}, problem_j["w"]);
+
+    throw std::runtime_error("invalid configuration json");
+}
+
+template <template <typename type> class vector, typename type>
+const IConstraint<vector, type> *parse_constraint(const nlohmann::json &run, const Problem<vector, type> &problem)
+{
+    auto cons_j = run["constraint"];
+    std::string cons_s = cons_j["type"];
+    if (cons_s == "counter")
+        return new СounterConstraint<vector, type>((unsigned long long int)cons_j["N"]);
+    else if (cons_s == "analytical")
+    {
+        auto mask = cons_j["comparison_mask"];
+        return new AnalyticalDeviationConstraint<vector, type>(
+            *dynamic_cast<IAnalyticalProblem<vector, type> *>(const_cast<Problem<vector, type> *>(&problem)),
+            problem.y0, std::slice(mask["start"], mask["size"], mask["stride"]), (type)cons_j["reletive_deviation_limit"]);
+    }
+    else if (cons_s == "invariant")
+        return new InvariantDeviationConstraint<vector, type>(
+            *dynamic_cast<IHaveInvariantProblem<vector, type> *>(const_cast<Problem<vector, type> *>(&problem)),
+            problem.y0, (type)cons_j["reletive_deviation_limit"]);
+
+    throw std::runtime_error("invalid configuration json");
+}
+
+template <template <typename type> class vector, typename type>
+Solver<vector, type> parse_solver(const nlohmann::json &run, const Problem<vector, type> &problem)
+{
+    std::string method = run["method"];
+    type delta = run["delta"];
+    if (method == "euler")
+        return Solver<vector, type>(problem, delta, euler<vector, type>);
+    else if (method == "heun")
+        return Solver<vector, type>(problem, delta, heun<vector, type>);
+    else if (method == "runge_kutta")
+        return Solver<vector, type>(problem, delta, runge_kutta<vector, type>);
+
+    throw std::runtime_error("invalid configuration json");
+}
+
+template <template <typename type> class vector, typename type>
+void do_run(const nlohmann::json &run)
+{
+    const Problem<vector, type> &problem = *parse_problem<vector, type>(run);
+    Solver<vector, type> solver = parse_solver<vector, type>(run, problem);
+    solver.run(*parse_constraint<vector, type>(run, problem));
+}
+
+template <typename type>
+void parse_vector(const nlohmann::json &run)
+{
+    std::string vector = run["vector"];
+    if (vector == "naive")
+        do_run<NaiveVector, type>(run);
+    else if (vector == "kahan")
+        do_run<KahanVector, type>(run);
+}
+
+void parse_type(const nlohmann::json &run)
+{
+    std::string type = run["type"];
+    if (type == "float")
+        parse_vector<float>(run);
+    else if (type == "double")
+        parse_vector<double>(run);
+    else if (type == "long double")
+        parse_vector<long double>(run);
+}
+
+void parse_and_run(const nlohmann::json &config)
+{
+    auto head = config["head"];
+
+    el_sep = head["el_sep"],
+    zone_sep = head["zone_sep"],
+    row_sep = head["row_sep"],
+    run_sep = head["run_sep"];
+    do_log = head["do_log"];
+
+    std::string stream_ = head["stream"];
+    if (stream_ == "std")
+        stream = &std::cout;
+
+    for (auto run : config["runs"])
+        parse_type(run);
+}
+
+#pragma endregion
 
 int main(int argc, char **argv)
 {
     std::ifstream f("/Users/samedi/Documents/факультатив/study_modelling/term_1/config.json");
-    nlohmann::json config = nlohmann::json::parse(f);
-
-    std::string e_sep = config["head"]["e_sep"],
-                a_sep = config["head"]["a_sep"],
-                r_sep = config["head"]["r_sep"],
-                n_sep = config["head"]["n_sep"];
-
-    for (auto run : config["data"])
-    {
-        bool completed = false;
-
-        std::string type = run["type"]; // выбор типа для вычислений
-        if (type == "float")
-            completed = Solve<float>(run, e_sep, a_sep, r_sep);
-        else if (type == "double")
-            completed = Solve<double>(run, e_sep, a_sep, r_sep);
-        else if (type == "long double")
-            completed = Solve<long double>(run, e_sep, a_sep, r_sep);
-        
-        if (completed) 
-        {
-            std::cout << n_sep << r_sep;
-        }
-    }
+    parse_and_run(nlohmann::json::parse(f));
 }
